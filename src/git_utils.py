@@ -3,8 +3,8 @@ import vertexai
 from vertexai.generative_models import GenerativeModel
 
 # Define default ignore lists as constants (remains the same)
-DEFAULT_IGNORE_DIRS = ['target', '.github', '.git', 'renovate', 'sonar', 'node_modules', 'e2e', 'k8s', 'docs', '.expo', 'patches', '.eas', '.husky', 'config', 'assets', '__snapshots__', '.vscode', '.danger', '__tests__', '__generatedGqlTypes__']
-DEFAULT_IGNORE_EXTS = ['.svg', '.jpg', '.png', '.bpmn', '.dmn', '.lock', '.bin', '.pdf', '.zip', '.tar', '.gz', '.jar', '.json', '.test.js', '.test.txt', '.snap', '.generated', '.graphql', '.otf', '.md']
+DEFAULT_IGNORE_DIRS = ['.github']
+DEFAULT_IGNORE_EXTS = ['.md']
 DEFAULT_IGNORE_FILES = []
 
 def count_tks(text_string, model_name: str = "gemini-pro"):
