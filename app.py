@@ -1,10 +1,10 @@
 # app.py
 import streamlit as st
-# Change the import from gemini_utils
-from src.gemini_utils import initialize_vertex_model, generate_gemini_content # Removed create_content helper as we build directly
 from src.git_utils import combine_repo_files, DEFAULT_IGNORE_DIRS, DEFAULT_IGNORE_EXTS, DEFAULT_IGNORE_FILES
 from src.config import get_config
-from vertexai.generative_models import Part, Content # Keep these
+from google import genai  # Updated import
+from src.gemini_utils import initialize_google_genai_model, generate_gemini_content
+from google.genai import types  # New import for Pydantic types
 import uuid
 from streamlit_tags import st_tags
 import os
@@ -135,49 +135,38 @@ def main():
         st.session_state.combined_ignore_exts = st_tags(label='Ignore File Extensions:', text='Press enter...', value=st.session_state.combined_ignore_exts, suggestions=DEFAULT_IGNORE_EXTS, maxtags=-1, key='tags_ignore_exts')
         st.session_state.combined_ignore_files = st_tags(label='Ignore Specific Files:', text='Press enter...', value=st.session_state.combined_ignore_files, suggestions=[], maxtags=-1, key='tags_ignore_files')
 
-
-    # --- Model Loading (remains largely the same, but ensure vision model selected) ---
+    # --- Client Loading (updated for google-genai with Vertex AI) ---
     project = get_config().get("GOOGLE_CLOUD_PROJECT")
     location = get_config().get("GCP_LOCATION")
     selected_model_name = st.session_state["gemini_model"]
 
-    # Check if model needs loading/reloading logic (remains the same)
-    current_model_obj = st.session_state.get("gemini_model_instance")
-    model_needs_update = False
-    if current_model_obj is None:
-        model_needs_update = True
-    else:
-        # ... (existing logic to check if model name changed) ...
-         try:
-             if hasattr(current_model_obj, '_model_name'):
-                 loaded_model_name = current_model_obj._model_name.split('/')[-1]
-                 if loaded_model_name != selected_model_name: model_needs_update = True
-             elif hasattr(current_model_obj, 'model_name'):
-                 loaded_model_name = current_model_obj.model_name.split('/')[-1]
-                 if loaded_model_name != selected_model_name: model_needs_update = True
-             else:
-                 prev_selected_model = st.session_state.get("_prev_gemini_model", None)
-                 if selected_model_name != prev_selected_model: model_needs_update = True
-         except Exception:
-             st.warning("Could not reliably determine loaded model name. Re-initializing on selection change.")
-             model_needs_update = True
+    # Check if client needs initialization
+    current_client = st.session_state.get("gemini_model_instance")
+    client_needs_init = current_client is None
 
+    if client_needs_init:
+        # Verify we have project and location for Vertex AI
+        if not project or not location:
+            st.error("Google Cloud Project ID and Location must be configured for Vertex AI.")
+            st.stop()
 
-    if model_needs_update and project and location and selected_model_name:
-        with st.spinner(f"Loading model {selected_model_name}..."):
-            st.session_state["gemini_model_instance"] = initialize_vertex_model(
-                project=project, location=location, model_name=selected_model_name
+        with st.spinner(f"Initializing Gemini client with Vertex AI..."):
+            # Initialize the client with Vertex AI credentials
+            st.session_state["gemini_model_instance"] = initialize_google_genai_model(
+                model_name=selected_model_name,
+                project=project,
+                location=location
             )
             st.session_state["_prev_gemini_model"] = selected_model_name
             if st.session_state["gemini_model_instance"]:
-                st.success(f"Model {selected_model_name} loaded.")
+                st.success(f"Gemini client initialized with model {selected_model_name}.")
             else:
-                st.error("Failed to load model. Check logs.")
+                st.error("Failed to initialize client. Check logs.")
     elif not (project and location):
         st.error("Google Cloud Project ID and Location must be configured.")
 
 
-    # --- Input Section: Directory and File Upload (UPDATED logic) ---
+    # --- Input Section: Directory and File Upload (unchanged) ---
     st.header("Input Context")
     col1, col2 = st.columns(2)
 
@@ -260,7 +249,7 @@ def main():
         with st.chat_message("user"):
              st.markdown(prompt)
 
-        # --- Prepare the messages for Gemini (UPDATED with multimodal structure) ---
+        # --- Prepare the messages for Gemini (UPDATED with google-genai structure) ---
         vertex_messages = []
         context_parts_text = [] # Accumulate only text context for the initial message
 
@@ -297,20 +286,24 @@ def main():
                 f"{full_text_context}\n\n"
                 "Based on the above context (code directory and text from uploaded files), and potentially uploaded images provided with the prompt, answer the following question:"
             )
-            # Use Content/Part directly
-            vertex_messages.append(Content(role="user", parts=[Part.from_text(text=context_message_text)]))
-            # Model acknowledgement
-            vertex_messages.append(Content(role="model", parts=[Part.from_text(text="Okay, I have loaded the provided context (code and text files). Ask your question, including any images you want me to analyze with it.")]))
+            # Create content with text parts using new google-genai format
+            vertex_messages.append({
+                "role": "user", 
+                "parts": [{"text": context_message_text}]
+            })
 
         # 4. Add chat history (converting roles)
         # Iterate up to the *second to last* message (exclude the current user prompt added above)
         for m in st.session_state.messages[:-1]:
             vertex_role = "user" if m["role"] == "user" else "model"
-            # Simple text history for now. More complex state needed if history involves images.
-            vertex_messages.append(Content(role=vertex_role, parts=[Part.from_text(text=m["content"])]))
+            # Simple text history for now
+            vertex_messages.append({
+                "role": vertex_role, 
+                "parts": [{"text": m["content"]}]
+            })
 
         # 5. Create the LATEST User Prompt Content (potentially multimodal)
-        latest_user_parts = [Part.from_text(text=prompt)] # Start with the text prompt
+        latest_user_parts = [{"text": prompt}] # Start with the text prompt
 
         # Add image data parts from processed files to the *current* prompt
         images_added_to_prompt = []
@@ -318,45 +311,44 @@ def main():
             for file_detail in st.session_state["processed_files_details"]:
                  if file_detail.get("data") and file_detail.get("type") in ["image/png", "image/jpeg"]:
                      try:
-                         latest_user_parts.append(Part.from_data(data=file_detail["data"], mime_type=file_detail["type"]))
+                         # Create an image part with inline_data format for google-genai
+                         latest_user_parts.append({
+                             "inline_data": {
+                                 "data": file_detail["data"], 
+                                 "mime_type": file_detail["type"]
+                             }
+                         })
                          images_added_to_prompt.append(file_detail['name'])
                      except Exception as img_e:
                           st.error(f"Failed to prepare image '{file_detail['name']}' for model: {img_e}")
-                          logging.error(f"Error creating Part.from_data for {file_detail['name']}: {img_e}", exc_info=True)
+                          logging.error(f"Error creating image part for {file_detail['name']}: {img_e}", exc_info=True)
 
         if images_added_to_prompt:
-             logging.info(f"Added {len(images_added_to_prompt)} image(s) to the current prompt: {', '.join(images_added_to_prompt)}")
-             # Optionally notify user in UI, though it might be verbose
-             # st.info(f"Sending images: {', '.join(images_added_to_prompt)} with your prompt.")
+             logging.info(f"Added {len(images_added_to_prompt)} image(s) to the current prompt")
 
         # Add the final user Content object (text + images)
-        vertex_messages.append(Content(role="user", parts=latest_user_parts))
+        vertex_messages.append({"role": "user", "parts": latest_user_parts})
         # --- End Message Preparation ---
 
 
-        # --- Generate and display assistant response (logic remains similar) ---
+        # --- Generate and display assistant response (updated for new SDK) ---
         with st.chat_message("assistant"):
-             model_instance = st.session_state.get("gemini_model_instance")
-             if not model_instance:
-                  st.error("Model is not initialized.")
-                  st.stop()
-
-             # Check if there's *any* context (code OR files) before first question
-             has_repo_context = bool(st.session_state.get("repo_content"))
-             has_file_context = bool(st.session_state.get("processed_files_details"))
-             # Adjust check: allow question if any context exists or if it's not the very first interaction
-             if not has_repo_context and not has_file_context and len(st.session_state.messages) <= 1:
-                  st.warning("Please process a local directory or upload files first to provide context.")
-                  # Remove the user message we optimistically added
-                  st.session_state.messages.pop()
+             client = st.session_state.get("gemini_model_instance")
+             if not client:
+                  st.error("Gemini client is not initialized.")
                   st.stop()
 
              try:
+                # Store the selected model name to pass to the generate function
+                model_name = st.session_state["gemini_model"]
+                
+                # Get response stream using the client
                 response_stream = generate_gemini_content(
-                     model_instance,
+                     client,
                      vertex_messages, # Pass the potentially multimodal messages
                      max_tokens=st.session_state["max_output_tokens"]
                  )
+                
                 response_placeholder = st.empty()
                 full_response = ""
                 for chunk in response_stream:
@@ -367,6 +359,7 @@ def main():
                          st.error("An error occurred during content generation. Check logs.")
                          logging.error("Received None chunk, signaling generation error.")
                          break
+                
                 response_placeholder.markdown(full_response)
                 if full_response:
                      # Add response to session state
@@ -376,7 +369,6 @@ def main():
                      # Or add a specific assistant message like "[No response generated]"
                      # For now, we just don't add an assistant message if full_response is empty
                      pass
-
 
              except Exception as e:
                  st.error(f"Failed to generate response: {e}")

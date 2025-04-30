@@ -1,8 +1,8 @@
 streamlit>=1.41.1
 vertexai>=1.71.1
-google==3.0.0
+google>=3.0.0
 google-genai>=0.6.0
-google-generativeai==0.8.4
+google-generativeai>=0.8.4
 st_cookie==1.0.0
 extra-streamlit-components==0.1.71
 streamlit-tags>=1.0.6
